@@ -240,7 +240,6 @@ func (s *SWIM) markSuspect(addr string) {
 		member.SuspectTime = time.Now()
 		log.Printf("Marked %s as suspect", addr)
 	}
-	s.membersMu.Unlock()
 }
 
 func (s *SWIM) sendPing(target string) error {
