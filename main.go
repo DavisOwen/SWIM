@@ -1,15 +1,15 @@
 package main
 
 import (
-  "os"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
 	"net"
+	"os"
+	"strconv"
 	"sync"
 	"time"
-  "strconv"
 )
 
 type MemberStatus int
@@ -25,11 +25,11 @@ func (s MemberStatus) String() string {
 }
 
 type Member struct {
-	Addr          string
-	Status        MemberStatus
-	Incarnation   uint64
-	SuspectTime   time.Time
-	mu            sync.RWMutex
+	Addr        string
+	Status      MemberStatus
+	Incarnation uint64
+	SuspectTime time.Time
+	mu          sync.RWMutex
 }
 
 type MessageType int
@@ -37,8 +37,8 @@ type MessageType int
 const (
 	PingMsg MessageType = iota
 	AckMsg
-	PingReqMsg // Request other node to ping target
-  PingReqAckMsg // Ack response from successful PingReqMsg
+	PingReqMsg    // Request other node to ping target
+	PingReqAckMsg // Ack response from successful PingReqMsg
 	AliveMsg
 	SuspectMsg
 	DeadMsg
@@ -50,9 +50,9 @@ type Message struct {
 	Target      string
 	Incarnation uint64
 	Members     []MemberInfo
-  RequestID   string
-  Success     bool
-  ForwardFor  string // who we're pinging on behalf of
+	RequestID   string
+	Success     bool
+	ForwardFor  string // who we're pinging on behalf of
 }
 
 type MemberInfo struct {
@@ -62,51 +62,51 @@ type MemberInfo struct {
 }
 
 type RequestKey struct {
-  MsgType    MessageType
-  Target     string
-  RequestID  string
+	MsgType   MessageType
+	Target    string
+	RequestID string
 }
 
 var expectedResponse = map[MessageType]MessageType{
-  PingMsg: AckMsg,
-  PingReqMsg: PingReqAckMsg,
+	PingMsg:    AckMsg,
+	PingReqMsg: PingReqAckMsg,
 }
 
 type SWIM struct {
-	localAddr     string
-	members       map[string]*Member
-	membersMu            sync.RWMutex
-	conn          *net.UDPConn
-	incarnation   uint64
-	
+	localAddr   string
+	members     map[string]*Member
+	membersMu   sync.RWMutex
+	conn        *net.UDPConn
+	incarnation uint64
+
 	// Configuration
-  pendingRequests          map[RequestKey]chan bool
-  pendingMu             sync.Mutex
-	pingInterval          time.Duration
-	pingTimeout           time.Duration
-	suspectTimeout        time.Duration
-	indirectPingCount     int
+	pendingRequests   map[RequestKey]chan bool
+	pendingMu         sync.Mutex
+	pingInterval      time.Duration
+	pingTimeout       time.Duration
+	suspectTimeout    time.Duration
+	indirectPingCount int
 }
 
 func getPrivateIP() (string, error) {
-    // Connect to a remote address (doesn't actually send packets)
-    // This tells us which interface/IP we'd use for external connectivity
-    conn, err := net.Dial("udp", "8.8.8.8:80")
-    if err != nil {
-        return "", err
-    }
-    defer conn.Close()
+	// Connect to a remote address (doesn't actually send packets)
+	// This tells us which interface/IP we'd use for external connectivity
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
 
-    localAddr := conn.LocalAddr().(*net.UDPAddr)
-    return localAddr.IP.String(), nil
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String(), nil
 }
 
 func NewSWIM(port int) (*SWIM, error) {
-  ip, err := getPrivateIP()
-  if err != nil {
-    return nil, fmt.Errorf("failed to detect IP: %v", err)
-  }
-  localAddr := fmt.Sprintf("%s:%d", ip, port)
+	ip, err := getPrivateIP()
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect IP: %v", err)
+	}
+	localAddr := fmt.Sprintf("%s:%d", ip, port)
 	udpAddr, err := net.ResolveUDPAddr("udp", localAddr)
 	if err != nil {
 		return nil, err
@@ -122,7 +122,7 @@ func NewSWIM(port int) (*SWIM, error) {
 		members:           make(map[string]*Member),
 		conn:              conn,
 		incarnation:       0,
-    pendingRequests:      make(map[RequestKey]chan bool),
+		pendingRequests:   make(map[RequestKey]chan bool),
 		pingInterval:      time.Second,
 		pingTimeout:       500 * time.Millisecond,
 		suspectTimeout:    5 * time.Second,
@@ -163,31 +163,31 @@ func (s *SWIM) Start() {
 
 // Sends ping and waits for response via channels
 func (s *SWIM) pingWithTimeout(target string) bool {
-  ackChan := make(chan bool, 1)
+	ackChan := make(chan bool, 1)
 
-  pendingPingRequest := RequestKey{MsgType: expectedResponse[PingMsg], Target: target}
+	pendingPingRequest := RequestKey{MsgType: expectedResponse[PingMsg], Target: target}
 
-  s.pendingMu.Lock()
-  s.pendingRequests[pendingPingRequest] = ackChan
-  s.pendingMu.Unlock()
+	s.pendingMu.Lock()
+	s.pendingRequests[pendingPingRequest] = ackChan
+	s.pendingMu.Unlock()
 
-  defer func() {
-    s.pendingMu.Lock()
-    delete(s.pendingRequests, pendingPingRequest)
-    s.pendingMu.Unlock()
-  }()
+	defer func() {
+		s.pendingMu.Lock()
+		delete(s.pendingRequests, pendingPingRequest)
+		s.pendingMu.Unlock()
+	}()
 
-  if err := s.sendPing(target); err != nil {
-    log.Printf("Failed to send ping to %s: %v", target, err)
-    return false 
-  }
+	if err := s.sendPing(target); err != nil {
+		log.Printf("Failed to send ping to %s: %v", target, err)
+		return false
+	}
 
-  select {
-  case <-ackChan:
-    return true
-  case <-time.After(s.pingTimeout):
-    return false
-  }
+	select {
+	case <-ackChan:
+		return true
+	case <-time.After(s.pingTimeout):
+		return false
+	}
 }
 
 // periodicPing implements the main ping loop
@@ -201,46 +201,46 @@ func (s *SWIM) periodicPing() {
 			continue
 		}
 
-    log.Printf("Pinging %s...", target)
+		log.Printf("Pinging %s...", target)
 
-    gotAck := s.pingWithTimeout(target)
+		gotAck := s.pingWithTimeout(target)
 
-    if gotAck {
-      log.Printf("%s responded (alive)", target)
-      s.markAlive(target)
-    } else {
-      log.Printf("%s did no respond (timeout)", target)
-      gotIndirectAck := s.indirectPing(target)
+		if gotAck {
+			log.Printf("%s responded (alive)", target)
+			s.markAlive(target)
+		} else {
+			log.Printf("%s did no respond (timeout)", target)
+			gotIndirectAck := s.indirectPing(target)
 
-      if gotIndirectAck {
-        log.Printf("%s responded to indirect ping", target)
-        s.markAlive(target)
-      } else {
-        log.Printf("%s failed both direct and indirect ping", target)
-        s.markSuspect(target)
-      }
-    }
+			if gotIndirectAck {
+				log.Printf("%s responded to indirect ping", target)
+				s.markAlive(target)
+			} else {
+				log.Printf("%s failed both direct and indirect ping", target)
+				s.markSuspect(target)
+			}
+		}
 	}
 }
 
 func (s *SWIM) markAlive(addr string) {
-  s.membersMu.Lock()
-  defer s.membersMu.Unlock()
+	s.membersMu.Lock()
+	defer s.membersMu.Unlock()
 
-  if member, exists := s.members[addr]; exists {
-    member.Status = Alive
-  }
+	if member, exists := s.members[addr]; exists {
+		member.Status = Alive
+	}
 }
 
 func (s *SWIM) markSuspect(addr string) {
-  s.membersMu.Lock()
-  defer s.membersMu.Unlock()
-  if member, exists := s.members[addr]; exists {
-    member.Status = Suspect
-    member.SuspectTime = time.Now()
-    log.Printf("Marked %s as suspect", addr)
-  }
-  s.membersMu.Unlock()
+	s.membersMu.Lock()
+	defer s.membersMu.Unlock()
+	if member, exists := s.members[addr]; exists {
+		member.Status = Suspect
+		member.SuspectTime = time.Now()
+		log.Printf("Marked %s as suspect", addr)
+	}
+	s.membersMu.Unlock()
 }
 
 func (s *SWIM) sendPing(target string) error {
@@ -267,47 +267,47 @@ func (s *SWIM) indirectPing(target string) bool {
 
 	// Select k random members
 	count := s.indirectPingCount
-  count = min(len(candidates), count)
+	count = min(len(candidates), count)
 
 	rand.Shuffle(len(candidates), func(i, j int) {
 		candidates[i], candidates[j] = candidates[j], candidates[i]
 	})
 
-  resultChan := make(chan bool, s.indirectPingCount)
+	resultChan := make(chan bool, s.indirectPingCount)
 
-  requestID := fmt.Sprintf("%d", time.Now().UnixNano())
+	requestID := fmt.Sprintf("%d", time.Now().UnixNano())
 
-  msgType := PingReqMsg
+	msgType := PingReqMsg
 
-  requestKey := RequestKey{MsgType: expectedResponse[msgType], Target: target, RequestID: requestID}
+	requestKey := RequestKey{MsgType: expectedResponse[msgType], Target: target, RequestID: requestID}
 
-  s.pendingMu.Lock()
-  s.pendingRequests[requestKey] = resultChan
-  s.pendingMu.Unlock()
+	s.pendingMu.Lock()
+	s.pendingRequests[requestKey] = resultChan
+	s.pendingMu.Unlock()
 
-  defer func() {
-    s.pendingMu.Lock()
-    delete(s.pendingRequests, requestKey)
-    s.pendingMu.Unlock()
-  }()
+	defer func() {
+		s.pendingMu.Lock()
+		delete(s.pendingRequests, requestKey)
+		s.pendingMu.Unlock()
+	}()
 
 	for i := 0; i < count; i++ {
 		msg := Message{
-			Type:   msgType,
-			From:   s.localAddr,
-      Target: candidates[i],
+			Type:       msgType,
+			From:       s.localAddr,
+			Target:     candidates[i],
 			ForwardFor: target,
-      RequestID: requestID,
+			RequestID:  requestID,
 		}
 		s.sendMessage(candidates[i], msg)
 	}
 
-  select {
-  case <-resultChan:
-    return true
-  case <-time.After(s.pingTimeout):
-    return false
-  }
+	select {
+	case <-resultChan:
+		return true
+	case <-time.After(s.pingTimeout):
+		return false
+	}
 }
 
 func (s *SWIM) checkSuspects() {
@@ -361,8 +361,8 @@ func (s *SWIM) handleMessage(msg Message) {
 		s.handleAck(msg)
 	case PingReqMsg:
 		s.handlePingReq(msg)
-  case PingReqAckMsg:
-    s.handlePingReqAckMsg(msg)
+	case PingReqAckMsg:
+		s.handlePingReqAckMsg(msg)
 	case AliveMsg, SuspectMsg, DeadMsg:
 		s.handleStatusUpdate(msg)
 	}
@@ -379,55 +379,55 @@ func (s *SWIM) handlePing(msg Message) {
 }
 
 func (s *SWIM) handleAck(msg Message) {
-  s.pendingMu.Lock()
-  ackChan, exists := s.pendingRequests[RequestKey{MsgType: msg.Type, Target: msg.From, RequestID: msg.RequestID}]
-  s.pendingMu.Unlock()
+	s.pendingMu.Lock()
+	ackChan, exists := s.pendingRequests[RequestKey{MsgType: msg.Type, Target: msg.From, RequestID: msg.RequestID}]
+	s.pendingMu.Unlock()
 
-  if exists {
-    select {
-    case ackChan <- true:
-      log.Printf("Delivered ACK to waiting ping for %s", msg.From)
-    default:
-    }
-  }
+	if exists {
+		select {
+		case ackChan <- true:
+			log.Printf("Delivered ACK to waiting ping for %s", msg.From)
+		default:
+		}
+	}
 }
 
 func (s *SWIM) handlePingReqAckMsg(msg Message) {
-  requestKey := RequestKey{
-      MsgType:   msg.Type,
-      Target:    msg.From,
-      RequestID: msg.RequestID,
-  } 
+	requestKey := RequestKey{
+		MsgType:   msg.Type,
+		Target:    msg.From,
+		RequestID: msg.RequestID,
+	}
 
-  s.pendingMu.Lock()
-  respChan, exists := s.pendingRequests[requestKey]
-  s.pendingMu.Unlock()
+	s.pendingMu.Lock()
+	respChan, exists := s.pendingRequests[requestKey]
+	s.pendingMu.Unlock()
 
-  if exists {
-    if !msg.Success {
-      return
-    }
-    select {
-    case respChan <- true:
-    default:
-    }
-  }
+	if exists {
+		if !msg.Success {
+			return
+		}
+		select {
+		case respChan <- true:
+		default:
+		}
+	}
 }
 
 // sends ping to ForwardFor on behalf of From
 func (s *SWIM) handlePingReq(msg Message) {
-  success := s.pingWithTimeout(msg.ForwardFor)
+	success := s.pingWithTimeout(msg.ForwardFor)
 
-  response := Message{
-    Type: PingReqAckMsg,
-    From: s.localAddr,
-    Target: msg.From,
-    ForwardFor: msg.ForwardFor,
-    RequestID: msg.RequestID,
-    Success: success,
-  }
+	response := Message{
+		Type:       PingReqAckMsg,
+		From:       s.localAddr,
+		Target:     msg.From,
+		ForwardFor: msg.ForwardFor,
+		RequestID:  msg.RequestID,
+		Success:    success,
+	}
 
-  s.sendMessage(msg.From, response)
+	s.sendMessage(msg.From, response)
 }
 
 func (s *SWIM) handleStatusUpdate(msg Message) {
@@ -444,11 +444,11 @@ func (s *SWIM) handleStatusUpdate(msg Message) {
 				member.SuspectTime = time.Now()
 			case DeadMsg:
 				member.Status = Dead
-      case AliveMsg:
-        member.Status = Alive
-      }
-    }
-  }
+			case AliveMsg:
+				member.Status = Alive
+			}
+		}
+	}
 }
 
 // updateMembership updates member list from gossip
@@ -521,12 +521,12 @@ func (s *SWIM) gossipMemberStatus(addr string, status MemberStatus, incarnation 
 		From:        addr,
 		Incarnation: incarnation,
 	}
-  switch status {
-  case Suspect:
-    msg.Type = SuspectMsg
-  case Dead:
-    msg.Type = DeadMsg
-  }
+	switch status {
+	case Suspect:
+		msg.Type = SuspectMsg
+	case Dead:
+		msg.Type = DeadMsg
+	}
 
 	// Send to random members
 	s.membersMu.RLock()
@@ -574,10 +574,10 @@ func main() {
 		return
 	}
 
-  port, err := strconv.Atoi(os.Args[1])
-  if err != nil {
-    panic(fmt.Sprintf("Invalid port: %v", err))
-  }
+	port, err := strconv.Atoi(os.Args[1])
+	if err != nil {
+		panic(fmt.Sprintf("Invalid port: %v", err))
+	}
 
 	swim, err := NewSWIM(port)
 	if err != nil {
