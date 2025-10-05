@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -86,6 +89,10 @@ type SWIM struct {
 	pingTimeout       time.Duration
 	suspectTimeout    time.Duration
 	indirectPingCount int
+
+	// Context for graceful shutdown
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func getPrivateIP() (string, error) {
@@ -117,6 +124,8 @@ func NewSWIM(port int) (*SWIM, error) {
 		return nil, err
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	s := &SWIM{
 		localAddr:         localAddr,
 		members:           make(map[string]*Member),
@@ -127,6 +136,8 @@ func NewSWIM(port int) (*SWIM, error) {
 		pingTimeout:       500 * time.Millisecond,
 		suspectTimeout:    5 * time.Second,
 		indirectPingCount: 3,
+		ctx:               ctx,
+		cancel:            cancel,
 	}
 
 	// Add self to members
@@ -195,29 +206,35 @@ func (s *SWIM) periodicPing() {
 	ticker := time.NewTicker(s.pingInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		target := s.selectRandomMember()
-		if target == "" {
-			continue
-		}
+	for {
+		select {
+		case <-s.ctx.Done():
+			log.Printf("periodicPing goroutine exiting")
+			return
+		case <-ticker.C:
+			target := s.selectRandomMember()
+			if target == "" {
+				continue
+			}
 
-		log.Printf("Pinging %s...", target)
+			log.Printf("Pinging %s...", target)
 
-		gotAck := s.pingWithTimeout(target)
+			gotAck := s.pingWithTimeout(target)
 
-		if gotAck {
-			log.Printf("%s responded (alive)", target)
-			s.markAlive(target)
-		} else {
-			log.Printf("%s did no respond (timeout)", target)
-			gotIndirectAck := s.indirectPing(target)
-
-			if gotIndirectAck {
-				log.Printf("%s responded to indirect ping", target)
+			if gotAck {
+				log.Printf("%s responded (alive)", target)
 				s.markAlive(target)
 			} else {
-				log.Printf("%s failed both direct and indirect ping", target)
-				s.markSuspect(target)
+				log.Printf("%s did no respond (timeout)", target)
+				gotIndirectAck := s.indirectPing(target)
+
+				if gotIndirectAck {
+					log.Printf("%s responded to indirect ping", target)
+					s.markAlive(target)
+				} else {
+					log.Printf("%s failed both direct and indirect ping", target)
+					s.markSuspect(target)
+				}
 			}
 		}
 	}
@@ -313,38 +330,60 @@ func (s *SWIM) checkSuspects() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.membersMu.Lock()
-		now := time.Now()
-		for addr, member := range s.members {
-			if member.Status == Suspect {
-				if now.Sub(member.SuspectTime) > s.suspectTimeout {
-					member.Status = Dead
-					log.Printf("Marked %s as dead", addr)
-					s.gossipMemberStatus(addr, Dead, member.Incarnation)
+	for {
+		select {
+		case <-s.ctx.Done():
+			log.Printf("checkSuspects goroutine exiting")
+			return
+		case <-ticker.C:
+			s.membersMu.Lock()
+			now := time.Now()
+			for addr, member := range s.members {
+				if member.Status == Suspect {
+					if now.Sub(member.SuspectTime) > s.suspectTimeout {
+						member.Status = Dead
+						log.Printf("Marked %s as dead", addr)
+						s.gossipMemberStatus(addr, Dead, member.Incarnation)
+					}
 				}
 			}
+			s.membersMu.Unlock()
 		}
-		s.membersMu.Unlock()
 	}
 }
 
 func (s *SWIM) receiveMessages() {
 	buf := make([]byte, 4096)
 	for {
-		n, _, err := s.conn.ReadFromUDP(buf)
-		if err != nil {
-			log.Printf("Error reading UDP: %v", err)
-			continue
-		}
+		select {
+		case <-s.ctx.Done():
+			log.Printf("receiveMessages goroutine exiting")
+			return
+		default:
+			// Set read deadline so we periodically check context
+			s.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			n, _, err := s.conn.ReadFromUDP(buf)
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					// Timeout is expected, continue to check context
+					continue
+				}
+				// Check if context was cancelled (connection closed)
+				if s.ctx.Err() != nil {
+					return
+				}
+				log.Printf("Error reading UDP: %v", err)
+				continue
+			}
 
-		var msg Message
-		if err := json.Unmarshal(buf[:n], &msg); err != nil {
-			log.Printf("Error unmarshaling message: %v", err)
-			continue
-		}
+			var msg Message
+			if err := json.Unmarshal(buf[:n], &msg); err != nil {
+				log.Printf("Error unmarshaling message: %v", err)
+				continue
+			}
 
-		s.handleMessage(msg)
+			s.handleMessage(msg)
+		}
 	}
 }
 
@@ -430,6 +469,12 @@ func (s *SWIM) handlePingReq(msg Message) {
 }
 
 func (s *SWIM) handleStatusUpdate(msg Message) {
+	// Special case: if this is about US being suspected, refute it!
+	if msg.From == s.localAddr && msg.Type == SuspectMsg {
+		s.refuteSuspicion(msg.Incarnation)
+		return
+	}
+
 	s.membersMu.Lock()
 	defer s.membersMu.Unlock()
 
@@ -448,6 +493,29 @@ func (s *SWIM) handleStatusUpdate(msg Message) {
 			}
 		}
 	}
+}
+
+// refuteSuspicion is called when we learn we've been marked as Suspect
+// We increment our incarnation and broadcast that we're alive
+func (s *SWIM) refuteSuspicion(suspectedIncarnation uint64) {
+	s.membersMu.Lock()
+
+	// Only refute if their incarnation is >= ours
+	if suspectedIncarnation >= s.incarnation {
+		s.incarnation = suspectedIncarnation + 1
+		log.Printf("Refuting suspicion! Incrementing incarnation to %d", s.incarnation)
+
+		// Update our own member record
+		if self, exists := s.members[s.localAddr]; exists {
+			self.Incarnation = s.incarnation
+			self.Status = Alive
+		}
+	}
+
+	s.membersMu.Unlock()
+
+	// Broadcast that we're alive with new incarnation
+	s.gossipMemberStatus(s.localAddr, Alive, s.incarnation)
 }
 
 // updateMembership updates member list from gossip
@@ -567,6 +635,13 @@ func (s *SWIM) GetMembers() []MemberInfo {
 	return members
 }
 
+// Shutdown gracefully stops all SWIM goroutines
+func (s *SWIM) Shutdown() {
+	log.Printf("Shutting down SWIM node %s", s.localAddr)
+	s.cancel()       // Signal all goroutines to stop
+	s.conn.Close()   // Close the UDP connection
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: swim <local-port> [seed-addr]")
@@ -591,12 +666,28 @@ func main() {
 
 	swim.Start()
 
+	// Setup signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
 	// Print members periodically
 	ticker := time.NewTicker(5 * time.Second)
-	for range ticker.C {
-		fmt.Println("\n=== Cluster Members ===")
-		for _, m := range swim.GetMembers() {
-			fmt.Printf("%s: %s (incarnation: %d)\n", m.Addr, m.Status, m.Incarnation)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-sigChan:
+			fmt.Println("\nReceived shutdown signal, shutting down gracefully...")
+			swim.Shutdown()
+			time.Sleep(500 * time.Millisecond) // Give goroutines time to cleanup
+			fmt.Println("Shutdown complete")
+			return
+
+		case <-ticker.C:
+			fmt.Println("\n=== Cluster Members ===")
+			for _, m := range swim.GetMembers() {
+				fmt.Printf("%s: %s (incarnation: %d)\n", m.Addr, m.Status, m.Incarnation)
+			}
 		}
 	}
 }

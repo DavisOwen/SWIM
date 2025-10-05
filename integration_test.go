@@ -12,13 +12,13 @@ func TestTwoNodeCluster(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create node1: %v", err)
 	}
-	defer node1.conn.Close()
+	defer node1.Shutdown()
 
 	node2, err := createTestNode()
 	if err != nil {
 		t.Fatalf("Failed to create node2: %v", err)
 	}
-	defer node2.conn.Close()
+	defer node2.Shutdown()
 
 	// Start both nodes
 	node1.Start()
@@ -85,7 +85,7 @@ func TestThreeNodeClusterWithFailure(t *testing.T) {
 			t.Fatalf("Failed to create node%d: %v", i, err)
 		}
 		nodes[i] = node
-		defer node.conn.Close()
+		defer node.Shutdown()
 	}
 
 	// Start all nodes
@@ -132,7 +132,7 @@ func TestThreeNodeClusterWithFailure(t *testing.T) {
 	}
 
 	// Simulate node failure by closing connection
-	nodes[2].conn.Close()
+	nodes[2].Shutdown()
 
 	// Wait for failure detection
 	waitForCondition(t, 15*time.Second, func() bool {
@@ -176,7 +176,7 @@ func TestGossipPropagation(t *testing.T) {
 			t.Fatalf("Failed to create node%d: %v", i, err)
 		}
 		nodes[i] = node
-		defer node.conn.Close()
+		defer node.Shutdown()
 		node.Start()
 	}
 
@@ -223,13 +223,13 @@ func TestPingAckMechanism(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create node1: %v", err)
 	}
-	defer node1.conn.Close()
+	defer node1.Shutdown()
 
 	node2, err := createTestNode()
 	if err != nil {
 		t.Fatalf("Failed to create node2: %v", err)
 	}
-	defer node2.conn.Close()
+	defer node2.Shutdown()
 
 	// Start both nodes
 	node1.Start()
@@ -269,7 +269,7 @@ func TestConcurrentOperations(t *testing.T) {
 			t.Fatalf("Failed to create node%d: %v", i, err)
 		}
 		nodes[i] = node
-		defer node.conn.Close()
+		defer node.Shutdown()
 		node.Start()
 	}
 
@@ -313,13 +313,13 @@ func BenchmarkPingPerformance(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create node1: %v", err)
 	}
-	defer node1.conn.Close()
+	defer node1.Shutdown()
 
 	node2, err := createTestNode()
 	if err != nil {
 		b.Fatalf("Failed to create node2: %v", err)
 	}
-	defer node2.conn.Close()
+	defer node2.Shutdown()
 
 	node1.Start()
 	node2.Start()
@@ -350,7 +350,7 @@ func TestRapidMembershipChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create seed: %v", err)
 	}
-	defer seed.conn.Close()
+	defer seed.Shutdown()
 	seed.Start()
 
 	// Create and join multiple nodes rapidly
@@ -363,7 +363,7 @@ func TestRapidMembershipChanges(t *testing.T) {
 			t.Fatalf("Failed to create node%d: %v", i, err)
 		}
 		nodes[i] = node
-		defer node.conn.Close()
+		defer node.Shutdown()
 		node.Start()
 
 		// Join with small random delay
@@ -384,7 +384,7 @@ func TestRapidMembershipChanges(t *testing.T) {
 
 	// Close half the nodes to test failure detection
 	for i := 0; i < nodeCount/2; i++ {
-		nodes[i].conn.Close()
+		nodes[i].Shutdown()
 	}
 
 	// Wait a bit for failure detection

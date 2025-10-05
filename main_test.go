@@ -38,7 +38,7 @@ func TestNewSWIM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SWIM node: %v", err)
 	}
-	defer node.conn.Close()
+	defer node.Shutdown()
 
 	if node.localAddr == "" {
 		t.Error("Local address should not be empty")
@@ -62,7 +62,7 @@ func TestMemberStatusTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SWIM node: %v", err)
 	}
-	defer node.conn.Close()
+	defer node.Shutdown()
 
 	// Add a test member
 	testAddr := "127.0.0.1:9999"
@@ -104,7 +104,7 @@ func TestMessageSerialization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SWIM node: %v", err)
 	}
-	defer node.conn.Close()
+	defer node.Shutdown()
 
 	// This should not panic
 	err = node.sendMessage("127.0.0.1:9999", msg)
@@ -119,7 +119,7 @@ func TestSelectRandomMember(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SWIM node: %v", err)
 	}
-	defer node.conn.Close()
+	defer node.Shutdown()
 
 	// With only self, should return empty
 	target := node.selectRandomMember()
@@ -168,7 +168,7 @@ func TestGetGossipMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SWIM node: %v", err)
 	}
-	defer node.conn.Close()
+	defer node.Shutdown()
 
 	// Add some members
 	for i := 0; i < 3; i++ {
@@ -201,7 +201,7 @@ func TestUpdateMembership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SWIM node: %v", err)
 	}
-	defer node.conn.Close()
+	defer node.Shutdown()
 
 	updates := []MemberInfo{
 		{Addr: "127.0.0.1:9000", Status: Alive, Incarnation: 1},
@@ -258,7 +258,7 @@ func TestSWIMConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SWIM node: %v", err)
 	}
-	defer node.conn.Close()
+	defer node.Shutdown()
 
 	// Check default values
 	if node.pingInterval != time.Second {
@@ -280,7 +280,7 @@ func TestGetMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SWIM node: %v", err)
 	}
-	defer node.conn.Close()
+	defer node.Shutdown()
 
 	// Add some test members
 	node.members["127.0.0.1:9000"] = &Member{
